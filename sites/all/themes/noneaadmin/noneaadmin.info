@@ -1,0 +1,6 @@
+name = Nonea Admin
+core = 6.x
+engine = phptemplate
+base theme = garland
+stylesheets[all][] = theme.css
+version = 1.0

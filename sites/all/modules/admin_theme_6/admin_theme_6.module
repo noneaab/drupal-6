@@ -1,0 +1,21 @@
+<?php
+
+/**
+ * Implementation of hook_init().
+ */
+function admin_theme_6_init() {
+  // Use the administrative theme if the user is looking at a page in the admin/* path.
+  if (
+    (arg(0) == 'node' && in_array(arg(2), array('track','translate','webform-results')))
+    ||
+    (arg(0) == 'filter')
+    ||
+    (arg(0) == 'user')
+    ||
+    (arg(1) == 'block')
+  ){
+    global $custom_theme;
+    $custom_theme = variable_get('admin_theme', '0');
+    drupal_add_css(drupal_get_path('module', 'system') .'/admin.css', 'module');
+  }
+}

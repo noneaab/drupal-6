@@ -1,0 +1,10 @@
+; $Id: closure_compiler.info,v 1.2 2010/04/29 06:48:31 mehmeta Exp $ 
+name = Google Closure Compiler
+description = Taps into the core JavaScript aggregation process and utilizes Google's Closure Compiler Script/Service.
+core = 6.x
+; Information added by drupal.org packaging script on 2010-05-02
+version = "6.x-1.3"
+core = "6.x"
+project = "closure_compiler"
+datestamp = "1272835505"
+

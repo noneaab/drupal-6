@@ -1,0 +1,10 @@
+name = Template
+core = 6.x
+engine = phptemplate
+stylesheets[all][] = reset-min.css
+stylesheets[all][] = main.css
+#scripts[] = jquery.bigtarget.js
+#scripts[] = ajax-lib.js
+#scripts[] = facebook.js
+scripts[] = main.js
+version = 1.0

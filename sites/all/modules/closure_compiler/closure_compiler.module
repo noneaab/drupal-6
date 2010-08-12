@@ -1,0 +1,382 @@
+<?php
+// $Id: closure_compiler.module,v 1.7 2010/04/30 06:05:05 mehmeta Exp $
+
+define("CLOSURE_COMPILER_SERVICE_URL", "http://closure-compiler.appspot.com/compile");
+define("CLOSURE_COMPILER_SIGNATURE", "/* Optimized by closure_compiler module using Google closure compiler. */");
+define("CLOSURE_COMPILER_FILE", 'compiler.jar');
+define("CLOSURE_COMPILER_TEST_STRING", 'var i = 4; alert(i+i);');
+define("CLOSURE_COMPILER_TEST_FILE", 'test_js_file.js');
+define("CLOSURE_COMPILER_TEMP_FILE", 'temp_js_file.js');
+
+function closure_compiler_menu ()
+{
+    $items = array();
+    $access = array('administer site configuration');
+    $items['admin/settings/closure_compiler_compile'] = array(
+        'title' => 'Closure Compiler',
+        'page callback' => 'closure_compiler_compile_page',
+        'access arguments' => $access,
+        'file' => 'mail.inc',
+        'type' => MENU_CALLBACK,
+    );
+}
+
+function closure_compiler_compile_page ()
+{
+	closure_compiler_compile();
+	exit;
+}
+
+/**
+ * hook_form_alter implementation, used to display the module settings under the standard performance settings.
+ * @param $form
+ * @param $form_state
+ * @param $form_id
+ */
+function closure_compiler_form_alter(&$form, &$form_state, $form_id) {
+	if ($form_id != 'system_performance_settings') {
+		return;
+	}
+	// If local compiling option is set, make sure it's still operational
+	closure_compiler_confirm_local(TRUE);
+
+	$form['bandwidth_optimizations']['closure_compiler'] = array (
+		'#type' => 'fieldset',
+		'#title' => t('Closure Compiler Settings (JavaScript)'),		
+	);
+	$form['bandwidth_optimizations']['closure_compiler']['closure_compiler_service'] = array (
+		'#type' => 'radios',
+		'#title' => t('Closure Compiler Optimizations'),
+		'#default_value' => variable_get('closure_compiler_service', 0),
+		'#options' => array (
+	t('Disabled'),
+	t('Enabled')
+	),
+		'#description' => t("Enables the use of Google Closure Compiler optimizations."),
+
+
+	);
+	$form['bandwidth_optimizations']['closure_compiler']['closure_compiler_local_status'] = array (
+		'#type' => 'fieldset',
+		'#title' => t('Local Closure Compiler Status'),		
+	);
+	$form['bandwidth_optimizations']['closure_compiler']['closure_compiler_local_status']['status_table'] = array (
+		'#type' => 'markup',
+		'#value' => closure_compiler_local_status_content(),		
+	);
+	$local_option = t('Compile locally via Java based compiler');
+	if (!closure_compiler_local_works()) {
+		$local_option .= ' (Not available due to error(s))';
+	}
+	$form['bandwidth_optimizations']['closure_compiler']['closure_compiler_process_method'] = array (
+		'#type' => 'radios',
+		'#title' => t('Preferred Processing Method'),
+		'#default_value' => variable_get('closure_compiler_process_method', 1),
+		'#options' => array (
+	$local_option,
+	t('Send JavaScript file contents to the API'),
+	t('Send JavaScript file paths to the API (Requires your site to be publicly accessible by Google)'),
+	),
+		'#description' => t("Second setting reads the cached JavaScript files under !filesyspath and sends the code directly to the service to be compiled. Second setting sends the URI of the JavaScript file for its contents to be retrieved and compiled by the service. Your site's URLs must be public (not an internal development domain etc.) for this method to work. IMPORTANT NOTE: If your JavaScript payload size is bigger than 200000 bytes, the module uses the second method regardless of this setting as it is the only mode possible in that case (API limitation).",array('!filesyspath' => file_directory_path())),		
+	);
+	$form['bandwidth_optimizations']['closure_compiler']['closure_compiler_process_limit'] = array (
+		'#type' => 'textfield',
+		'#title' => t('Process Limit'),
+		'#default_value' => (int)variable_get('closure_compiler_process_limit', 5),
+		'#description' => t("Limit the number of javascript files that will be processed during a single cron run. 0 is unlimited.")
+	);
+	$form['bandwidth_optimizations']['closure_compiler']['closure_compiler_interval'] = array (
+		'#type' => 'textfield',
+		'#title' => t('Process interval'),
+		'#default_value' => (int)variable_get('closure_compiler_interval', 50),
+		'#description' => t("Set the minimum interval to wait before next compile in minutes.")
+	);
+	$form['bandwidth_optimizations']['closure_compiler']['closure_compiler_compilation_level'] = array (
+		'#type' => 'radios',
+		'#title' => t('Compilation Level'),
+		'#default_value' => variable_get('closure_compiler_compilation_level', 1),
+		'#options' => array (
+	t('Whitespace only'),
+	t('Simple optimizations'),
+	t('Advanced optimizations (Not recommended)'),
+	),
+		'#description' => t("The degree of compression and optimization to apply to your JavaScript. Check out the !link for more information. Advanced optimizations level tends to break Drupal JavaScript and tends to be highly unstable. If unsure, keep the default setting. A change to this setting may require a cache clear to fully go into effect.",array('!link' => l('api reference page', 'http://code.google.com/closure/compiler/docs/api-ref.html'))),		
+	);
+	// Warn the user if js aggregation is not enabled
+	if (!variable_get('preprocess_js', 0)) {
+		$form['bandwidth_optimizations']['closure_compiler']['js_aggregation_disabled'] = array(
+			'#type'  => 'markup',
+			'#value' => '<b><span style="color:red;">Javascript aggregation has to be enabled for closure compiler module to work. Please enable Optimize Javascript Files feature.</span></b>',
+			'#weight' => -10
+			
+		);
+		$form['bandwidth_optimizations']['closure_compiler']['closure_compiler_process_limit']['#disabled'] = TRUE;
+		$form['bandwidth_optimizations']['closure_compiler']['closure_compiler_interval']['#disabled'] = TRUE;
+		$form['bandwidth_optimizations']['closure_compiler']['closure_compiler_process_method']['#disabled'] = TRUE;
+		$form['bandwidth_optimizations']['closure_compiler']['closure_compiler_compilation_level']['#disabled'] = TRUE;
+		$form['bandwidth_optimizations']['closure_compiler']['closure_compiler_service']['#disabled'] = TRUE;
+	}
+	// Warn the user if other js aggregation modules are enabled
+	$js_modules = array('javascript_aggregator');
+	foreach ($js_modules as $module) {
+		if (module_exists($module)) {
+			drupal_set_message(t('Warning: Javascript module @module is enabled. This might cause problems with the Closure Compiler module.', array (
+			'@module' => $module
+			)), 'warning');
+		}
+	}
+}
+/**
+ * If the local compiler fails and preferred method is set to local, display an error message and set it to the second option
+ */
+function closure_compiler_confirm_local($display_message = FALSE) {
+	if (!closure_compiler_local_works() && (variable_get('closure_compiler_process_method', 1) == 0)) {
+		if ($display_message) {
+			drupal_set_message('Closure Compiler preferred method was set to use the API. Please check the errors with local compiling below.', 'error');
+		} else {
+			// If we're not displaying the message, we're writing to watchdog
+			watchdog('closure_compiler', t('Error: Local compiling failed, switching to API mode.'));
+		}
+		variable_set('closure_compiler_process_method', 1);
+	}
+}
+/**
+ * hook_cron implementation.
+ */
+function closure_compiler_cron() {
+	if (variable_get('closure_compiler_service', FALSE) && variable_get('preprocess_js', 0)) {
+		// Interval?
+		$ival = variable_get('closure_compiler_interval', 0);
+		$last = variable_get('closure_compiler_last_run', 0);
+		if ($ival && $last && $last + $ival > time()) return;
+		variable_set('closure_compiler_last_run', time());
+		// Perform local compiling check before each compilation cycle
+		closure_compiler_confirm_local();
+		closure_compiler_compile();
+	}
+}
+/**
+ * Main compilation function 
+ */
+function closure_compiler_compile() {
+	$js_path = file_create_path('js');
+	$temp_file_path = $js_path . '/' . CLOSURE_COMPILER_TEMP_FILE;
+	// Start by deleting the temporary js file if it exists
+	file_delete($temp_file_path);
+	$js_files = scandir($js_path);
+	$process_limit = variable_get('closure_compiler_process_limit', 5);
+	foreach ($js_files as $key => $filename) {
+		if (substr($filename, -3, 3) != '.js') {
+			unset ($js_files[$key]);
+		}
+	}
+	if (empty ($js_files)) {
+		drupal_set_message('No aggregated javascript files found at ' . check_plain($js_path) . '.');
+		return;
+	}
+	// Get ready to process js files
+	$compiler_path = drupal_get_path('module', 'closure_compiler') . '/' . CLOSURE_COMPILER_FILE;
+	$success = $failed = 0;
+	$compilation_levels = closure_compiler_compilation_levels();
+	$compilation_level = $compilation_levels[variable_get('closure_compiler_compilation_level', 1)];
+	$process_method = variable_get('closure_compiler_process_method', 1);
+	foreach ($js_files as $filename) {
+		// 	Terminate the process if we hit the limit
+		if ($process_limit && ($success + $failed) == $process_limit) {
+			break;
+		}
+		$filepath = $js_path . '/' . $filename;
+		// If the file has already been optimized, do not process it
+		if (!($temp_handle = fopen($filepath, "rb")) || (fread($temp_handle, strlen(CLOSURE_COMPILER_SIGNATURE)) == CLOSURE_COMPILER_SIGNATURE)) {
+			continue;
+		}
+		fclose($temp_handle);
+		// Compile locally if that is the available/preferred method
+		if ($process_method == 0) {
+			// We are making the compiler script write to a temporary file, prepend the signature and then replace the javascript file
+			// because the raw console output can include error or warning messages, which breaks js.
+			$command = 'java -jar ' . $compiler_path . ' --compilation_level ' . $compilation_level . ' --js ' . $filepath
+			.' --js_output_file ' . $temp_file_path;
+			$output = shell_exec($command.' 2>&1');
+			// Check whether the file compiled successfully
+			if (!is_file($temp_file_path)
+			// See whether file has some content
+			|| !($compiled_js = file_get_contents($temp_file_path))
+			// Append signature to compiled script and overwrite the file with the result
+			|| !file_put_contents($filepath, CLOSURE_COMPILER_SIGNATURE . $compiled_js)) {
+				watchdog('closure_compiler', 'Compile error: '.$output, NULL, WATCHDOG_ERROR);
+				$failed++;
+				continue;
+			}
+			// Cleanup
+			file_delete($temp_file_path);
+			$success++;
+			continue;
+		}
+		$params = array (
+			'compilation_level' => $compilation_level,
+			'output_info' => 'compiled_code',
+			'output_format' => 'json'
+		);
+		// If the data is over 200000 bytes, API will return an error saying POST data is too large,
+		// code_url is the only method possible at that point.
+		if ((filesize($filepath) > 200000)|| $process_method == 2) {
+			// Path method
+			global $base_url;
+			$params['code_url'] = $base_url . '/'. $filepath;
+		} else {
+			// Content method
+			$params['js_code'] = file_get_contents($filepath);
+		}
+		$headers = array (
+		'Content-Type' => 'application/x-www-form-urlencoded'
+		);
+		$response = drupal_http_request(CLOSURE_COMPILER_SERVICE_URL, $headers, 'POST', http_build_query($params, '', '&'));
+		if ($response->code != 200 || !$response->data) {
+			watchdog('closure_compiler', t('Request error: @request', array (
+			'@request' => print_r($response, TRUE)
+			)));
+			$failed++;
+			continue;
+		}
+		// Decode json in the response
+		if (!($compiled_code = json_decode($response->data, TRUE)) || !is_array($compiled_code)) {
+			watchdog('closure_compiler', t('Failed to parse JSON response: @response', array (
+			'@response' => $response->data
+			)));
+			$failed++;
+			continue;
+		}
+		if (array_key_exists('serverErrors', $compiled_code)) {
+			watchdog('closure_compiler', t('Server error: @error', array (
+			'@error' => print_r($compiled_code['serverErrors'], TRUE),				
+			)));
+			$failed++;
+			continue;
+		}
+		if (array_key_exists('compiledCode', $compiled_code) && !empty($compiled_code['compiledCode'])) {
+			// Success, write it back to the file
+			$contents = CLOSURE_COMPILER_SIGNATURE . $compiled_code['compiledCode'];
+			if (file_put_contents($filepath, $contents)) {
+				$success++;
+			} else {
+				$failed++;
+			}
+		} else {
+			$failed++;
+		}
+	}
+	if (($success + $failed) > 0) {
+		watchdog('closure_compiler', t('Successfully compiled @success javascript files, @fail failed.', array (
+			'@success' => $success,
+			'@fail' => $failed
+		)));	
+	}	
+}
+/**
+ * This function tests first hand that local closure compiler function is able to work as intended.
+ */
+function closure_compiler_local_works() {
+	// If performed this check during this execution, do not test again
+	static $result;
+	if (isset($result)) {
+		return $result;
+	}
+	$test_file_path = file_create_path('js'). '/' . CLOSURE_COMPILER_TEST_FILE;
+	// Try to create the file
+	@file_put_contents($test_file_path, CLOSURE_COMPILER_TEST_STRING);
+	// How are we going to compile locally if we can't write a file to js folder?
+	if (!file_exists($test_file_path)) {
+		$result = FALSE;
+		return $result;
+	}
+	$compiler_path = drupal_get_path('module', 'closure_compiler') . '/' . CLOSURE_COMPILER_FILE;
+	$compilation_levels = closure_compiler_compilation_levels();
+	// Pick simple optimizations for testing
+	$compilation_level  = $compilation_levels[1];
+	// Try to compile the file locally
+	$command = 'java -jar ' . $compiler_path . ' --compilation_level ' . $compilation_level . ' --js ' . $test_file_path;
+	$compiled_string = shell_exec($command.' 2>&1');
+	if (is_file($test_file_path)) {
+		// Clean up
+		unlink($test_file_path);
+	} else {
+		$result = FALSE;
+		return $result;
+	}
+
+	if (!$compiled_string || !strlen($compiled_string)) {
+		$result = FALSE;
+		return $result;
+	}
+	// So it should remove the whitespaces, resulting with a lower char count
+	$result = (strlen($compiled_string) < strlen(CLOSURE_COMPILER_TEST_STRING));
+	return $result;
+}
+/**
+ * Combination of all tests which determine whether compiling locally is operational.
+ */
+function closure_compiler_local_available() {
+	return closure_compiler_java_installed() && closure_compiler_compiler_exists() && closure_compiler_local_works();
+}
+function closure_compiler_compiler_exists() {
+	return file_exists(drupal_get_path('module', 'closure_compiler') . '/' . CLOSURE_COMPILER_FILE) ;
+}
+/**
+ * Returns whether java is installed on the machine and executable from console or not. Until someone points out a better way
+ * (there's gotta be!), this is how it will happen.
+ */
+function closure_compiler_java_installed() {
+	$output = shell_exec('java 2>&1');
+	return (stripos($output, 'Usage') !== FALSE);
+}
+
+function closure_compiler_compilation_levels() {
+	return array (
+		'WHITESPACE_ONLY',
+		'SIMPLE_OPTIMIZATIONS',
+		'ADVANCED_OPTIMIZATIONS'
+		);
+}
+/**
+ *  Generates and returns the local closure compiler status markup
+ */
+function closure_compiler_local_status_content() {
+	drupal_add_css(drupal_get_path('module', 'system') .'/admin.css');
+	$java_installed = closure_compiler_java_installed();
+	$java_status = array(
+		'value' => $java_installed ? 'Java appears to be installed on your system.' 
+		: 'Unable to verify that Java is installed via command line PHP.',
+		'title'  => 'Java',
+		);
+		if (!$java_installed) {
+			$java_status['severity'] = 2;
+		}
+		$compiler_exists = closure_compiler_compiler_exists();
+		$module_path = drupal_get_path ('module', 'closure_compiler');
+		$compiler_status = array(
+		'value' => $compiler_exists ? 'Compiler file '. CLOSURE_COMPILER_FILE . ' exists in Closure Compiler module directory.'
+		: 'Unable to locate ' . CLOSURE_COMPILER_FILE . ' in Closure Compiler module directory (' . $module_path . ').',
+		'title' => 'Compiler File'
+		);
+		if (!$compiler_exists) {
+			$compiler_status['severity'] = 2;
+		}
+		$compiler_working = closure_compiler_local_works();
+		$compiler_working_status = array(
+		'value' => $compiler_working ? 'Verified that Closure Compiler works locally.'
+		: 'Unable to run Closure Compiler locally. Please check Java version, PHP permissions.',
+		'title' => 'Local Compiler Test'
+		);
+		if (!$compiler_working) {
+			$compiler_working_status['severity'] = 2;
+		}
+		$requirements = array(
+		$java_status,
+		$compiler_status,
+		$compiler_working_status
+		);
+		// For proper theme variables, install.inc needs to be included
+		include_once './includes/install.inc';
+		return theme('status_report', $requirements);
+}
